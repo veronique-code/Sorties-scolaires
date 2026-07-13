@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Carnet des sorties scolaires</title>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap');
 
@@ -107,6 +110,12 @@ header.top .subtitle{font-size:13px;color:var(--ink-soft);margin-top:2px;}
   font-size:12px;color:var(--ink-soft);background:var(--paper-dark);
   border-radius:8px;padding:9px 14px;margin-bottom:20px;line-height:1.5;
 }
+.sync-badge{
+  font-size:12px;font-weight:600;padding:5px 12px;border-radius:14px;
+  background:var(--paper-dark);color:var(--ink-soft);
+}
+.sync-badge.ok{background:#E4F0E9;color:var(--done);}
+.sync-badge.warn{background:#FBEDE8;color:var(--pending);}
 
 .card-badge{
   position:absolute;top:14px;right:14px;z-index:1;
@@ -268,6 +277,7 @@ select:focus, input:focus, textarea:focus{outline:2px solid var(--forest);outlin
       </div>
     </div>
     <div class="year-badge">Année 2026–2027</div>
+    <div class="sync-badge" id="syncBadge">⏳ Connexion…</div>
   </header>
 
   <div class="stats" id="stats"></div>
@@ -305,7 +315,7 @@ select:focus, input:focus, textarea:focus{outline:2px solid var(--forest);outlin
   </div>
 
   <div class="storage-note" id="storageNote">
-    💾 Vos données sont enregistrées dans <strong>ce navigateur, sur cet ordinateur</strong>. Si vous changez d'appareil ou de navigateur, utilisez « Exporter » puis « Importer » pour transférer votre carnet.
+    ☁️ Vos données se synchronisent automatiquement entre tous vos appareils une fois la configuration terminée (voir le badge en haut à droite). En cas de coupure internet, l'appli continue de fonctionner avec la dernière copie enregistrée localement. Le bouton « Exporter » reste utile pour une sauvegarde de secours.
   </div>
 
   <div class="grid" id="grid"></div>
@@ -428,21 +438,96 @@ let sorties = [];
 let editingId = null;
 let modalState = { classes:[], needsCantine:false, steps:{} };
 
-const STORAGE_KEY = 'carnet_sorties_jean_aicard_2026_2027';
+/* ============================================================
+   CONFIGURATION FIREBASE
+   Remplacez les valeurs ci-dessous par celles de VOTRE projet
+   Firebase (Console Firebase > Paramètres du projet > Vos applications).
+   Tant que ce n'est pas fait, l'appli fonctionne quand même,
+   mais uniquement en local (pas de synchronisation entre appareils).
+   ============================================================ */
+const firebaseConfig = {
+  apiKey: "AIzaSyDovrxndeWXBs-ZA_-QQYw6983D5bQ6kgo",
+  authDomain: "sorties-scolaires.firebaseapp.com",
+  projectId: "sorties-scolaires",
+  storageBucket: "sorties-scolaires.firebasestorage.app",
+  messagingSenderId: "690408502155",
+  appId: "1:690408502155:web:d0d5cfc618e64d5028f58e"
+};
+const FIREBASE_CONFIGURED = firebaseConfig.apiKey !== "VOTRE_API_KEY";
 
-async function loadData(){
+const STORAGE_KEY = 'carnet_sorties_jean_aicard_2026_2027';
+let db = null;
+let docRef = null;
+let unsubscribeSnapshot = null;
+let suppressNextWrite = false;
+
+function setSyncBadge(state, text){
+  const el = document.getElementById('syncBadge');
+  el.className = 'sync-badge ' + state;
+  el.textContent = text;
+}
+
+function loadLocal(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
-    sorties = raw ? JSON.parse(raw) : [];
-  }catch(e){ sorties = []; }
-  render();
+    return raw ? JSON.parse(raw) : [];
+  }catch(e){ return []; }
 }
-async function saveData(){
+function saveLocal(data){
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
+  catch(e){ console.error('Erreur de sauvegarde locale', e); }
+}
+
+async function loadData(){
+  // Affichage immédiat depuis la copie locale (fonctionne hors-ligne)
+  sorties = loadLocal();
+  render();
+
+  if(!FIREBASE_CONFIGURED){
+    setSyncBadge('warn', '⚠ Synchronisation non configurée');
+    return;
+  }
+
   try{
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sorties));
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    setSyncBadge('warn', '⏳ Connexion…');
+
+    await firebase.auth().signInAnonymously();
+
+    docRef = db.collection('carnet').doc('sorties');
+
+    unsubscribeSnapshot = docRef.onSnapshot((snap)=>{
+      if(suppressNextWrite){ suppressNextWrite = false; return; }
+      if(snap.exists){
+        sorties = snap.data().sorties || [];
+      }else{
+        sorties = [];
+      }
+      saveLocal(sorties);
+      render();
+      setSyncBadge('ok', '🟢 Synchronisé');
+    }, (err)=>{
+      console.error('Erreur de synchronisation', err);
+      setSyncBadge('warn', '⚠ Hors ligne (données locales)');
+    });
+
   }catch(e){
-    console.error('Erreur de sauvegarde', e);
-    alert("La sauvegarde locale a échoué. Pensez à exporter régulièrement vos données (bouton « Exporter »).");
+    console.error('Erreur Firebase', e);
+    setSyncBadge('warn', '⚠ Hors ligne (données locales)');
+  }
+}
+
+async function saveData(){
+  saveLocal(sorties);
+  if(!FIREBASE_CONFIGURED || !docRef) return;
+  try{
+    suppressNextWrite = true;
+    await docRef.set({sorties, updatedAt: new Date().toISOString()});
+    setSyncBadge('ok', '🟢 Synchronisé');
+  }catch(e){
+    console.error('Erreur d\'envoi vers le cloud', e);
+    setSyncBadge('warn', '⚠ Non synchronisé — sera réessayé');
   }
 }
 
