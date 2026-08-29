@@ -361,7 +361,7 @@ const slug = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,""
 /* =========================================================================
    3. STOCKAGE : Firestore si la clé est présente, sinon local
    ========================================================================= */
-const LOCAL_ONLY = firebaseConfig.apiKey.startsWith("COLLEZ");
+const LOCAL_ONLY = firebaseConfig.apiKey.startsWith("COLLEZ") || firebaseConfig.apiKey.startsWith("VOTRE");
 let store, taches = [];
 
 const localStore = {
